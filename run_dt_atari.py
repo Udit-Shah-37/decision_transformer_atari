@@ -14,6 +14,7 @@ import time
 from torch.utils.data import Dataset, DataLoader
 import cv2  # Make sure cv2 is imported at the top
 import ale_py
+import matplotlib.pyplot as plt
 class MinariAtariDataset(Dataset):
     def __init__(self, game_name, max_len=30, max_ep_len=1000, scale=1000.0, frame_stack=4):
         self.max_len = max_len
@@ -432,6 +433,7 @@ class DecisionTransformer(GPT):
         action = torch.argmax(action_preds).item()
         
         return action
+
 def train_dt_atari(
     game_name='breakout',
     sequence_length=30,
@@ -446,7 +448,7 @@ def train_dt_atari(
     n_head=8,
     dropout=0.1,
     save_dir='dt_models',
-    eval_interval=1,  # Evaluate every 10 epochs
+    eval_interval=1,  # Evaluate every epoch
 ):
     # Set random seeds
     random.seed(seed)
@@ -492,6 +494,7 @@ def train_dt_atari(
     
     # Lists to store metrics
     all_epoch_losses = []
+    batch_losses = []  # Track individual batch losses for more detailed plotting
     eval_returns = []
     
     # Training loop
@@ -511,7 +514,6 @@ def train_dt_atari(
             action_preds = model(states, actions, returns_to_go, timesteps, attention_mask)
             
             # Calculate loss only on actual sequences (not padding)
-            # Reshape predictions and target actions for loss calculation
             action_preds = action_preds.reshape(-1, act_dim)
             target_actions = actions.reshape(-1)
             
@@ -524,17 +526,19 @@ def train_dt_atari(
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.25)  # Added gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 0.25)
             optimizer.step()
             
-            epoch_losses.append(loss.item())
+            batch_loss = loss.item()
+            epoch_losses.append(batch_loss)
+            batch_losses.append(batch_loss)  # Track all batch losses
             
             if batch_idx % 10 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs}, Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
+                print(f"Epoch {epoch+1}/{num_epochs}, Batch {batch_idx}/{len(train_loader)}, Loss: {batch_loss:.4f}")
         
         # End of epoch statistics
         mean_loss = np.mean(epoch_losses)
-        all_epoch_losses.append(mean_loss)  # Store the mean loss for this epoch
+        all_epoch_losses.append(mean_loss)
         elapsed_time = time.time() - start_time
         print(f"Epoch {epoch+1}/{num_epochs} completed. Mean loss: {mean_loss:.4f}, Time: {elapsed_time:.2f}s")
         
@@ -552,17 +556,13 @@ def train_dt_atari(
         if (epoch + 1) % eval_interval == 0:
             print(f"Evaluating model at epoch {epoch+1}...")
             model.eval()
-            # Temporarily save model for evaluation
-            eval_model_path = os.path.join(save_dir, f"{game_name}_dt_eval_temp.pt")
-            torch.save(model.state_dict(), eval_model_path)
             
-            # Run evaluation
             try:
                 avg_return = evaluate_dt_atari(
-                    model=model,  # Pass model directly instead of loading from file
+                    model=model,
                     game_name=game_name,
-                    num_eval_episodes=10,  # 10 rollouts for evaluation
-                    target_return=100,  # Use appropriate target return
+                    num_eval_episodes=5,  # Reduced from 10 to 5 for faster evaluation
+                    target_return=100,
                     device=device
                 )
                 eval_returns.append((epoch+1, avg_return))
@@ -587,27 +587,43 @@ def train_dt_atari(
             f.write(f"Epoch {epoch+1}: {loss:.6f}\n")
     print(f"Training losses saved to {loss_path}")
     
-    # Plot and save loss curve
-    plt.figure(figsize=(10, 5))
-    plt.plot(range(1, num_epochs+1), all_epoch_losses)
+    # Plot and save loss curves
+    
+    # 1. Epoch-wise loss curve
+    plt.figure(figsize=(12, 6))
+    plt.subplot(1, 2, 1)
+    plt.plot(range(1, num_epochs+1), all_epoch_losses, 'b-', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title(f'Training Loss for {game_name}')
+    plt.title(f'Training Loss by Epoch for {game_name}')
     plt.grid(True)
-    plt.savefig(os.path.join(save_dir, f"{game_name}_loss_curve.png"))
+    
+    # 2. Batch-wise loss curve (more detailed)
+    plt.subplot(1, 2, 2)
+    plt.plot(batch_losses, 'r-', alpha=0.7)
+    plt.xlabel('Batch')
+    plt.ylabel('Loss')
+    plt.title(f'Training Loss by Batch for {game_name}')
+    plt.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"{game_name}_loss_curves.png"))
+    print(f"Loss curves saved to {save_dir}/{game_name}_loss_curves.png")
     
     # Plot evaluation returns if we have any
     if eval_returns:
         epochs, returns = zip(*eval_returns)
         plt.figure(figsize=(10, 5))
-        plt.plot(epochs, returns)
+        plt.plot(epochs, returns, 'g-o', linewidth=2)
         plt.xlabel('Epoch')
         plt.ylabel('Average Return')
         plt.title(f'Evaluation Returns for {game_name}')
         plt.grid(True)
         plt.savefig(os.path.join(save_dir, f"{game_name}_eval_returns.png"))
+        print(f"Evaluation returns plot saved to {save_dir}/{game_name}_eval_returns.png")
     
     return model, all_epoch_losses, eval_returns
+
 
 class SimpleFrameStack:
     def __init__(self, env, num_stack=4):
@@ -642,34 +658,33 @@ class SimpleFrameStack:
     def close(self):
         return self.env.close()
 # Evaluation function
-def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100, device='cuda'):
-    """
-    Evaluate a trained Decision Transformer model on Atari environments.
-    Uses preprocessing consistent with training data.
-    """
-    import gymnasium as gym
-    import numpy as np
-    import torch
-    from collections import deque
-    import cv2
-
-    # Use standard Atari environment - ALE prefix worked in your debug script
+def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100, device='cuda', 
+                      render=True, render_freq=1, save_video=False, video_dir='videos'):
+  
+    # Set up video recording if requested
+    if save_video:
+        os.makedirs(video_dir, exist_ok=True)
+    
+    # Use standard Atari environment
     env_name = f"ALE/{game_name[0].upper() + game_name[1:]}-v5"
     
     try:
         print(f"Creating environment: {env_name}")
-        env = gym.make(env_name, render_mode="human")
+        # Set render_mode based on whether we're rendering or not
+        render_mode = "human" if render else "rgb_array"
+        env = gym.make(env_name, render_mode=render_mode)
         print(f"Successfully created environment: {env_name}")
     except Exception as e:
-        print(f"Failed: {e}")
+        print(f"Failed to create environment: {e}")
         # Try alternate naming
         alt_env_name = f"{game_name[0].upper() + game_name[1:]}-v5"
         try:
-            env = gym.make(alt_env_name, render_mode="human")
+            render_mode = "human" if render else "rgb_array"
+            env = gym.make(alt_env_name, render_mode=render_mode)
             print(f"Successfully created environment: {alt_env_name}")
         except Exception as e2:
             print(f"Failed again: {e2}")
-            return
+            return 0  # Return 0 as fallback
     
     print("Starting evaluation...")
     
@@ -683,8 +698,23 @@ def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100,
         done = False
         truncated = False
         
-        # Initialize frame buffer exactly as in training
-        frame_buffer = deque(maxlen=4)  # Stack 4 frames as in training
+        # For video recording
+        if save_video:
+            video_frames = []
+            video_path = os.path.join(video_dir, f"{game_name}_episode_{ep+1}.mp4")
+        
+        # Track lives for games like Breakout
+        if 'lives' in info:
+            initial_lives = info['lives']
+            current_lives = initial_lives
+            print(f"Game has lives tracking: {initial_lives} initial lives")
+        else:
+            initial_lives = None
+            current_lives = None
+            print("Game does not have lives tracking")
+        
+        # Initialize frame buffer for stacking
+        frame_buffer = deque(maxlen=4)
         
         # Preprocess and fill buffer with initial frame
         processed_frame = preprocess_frame(state)
@@ -706,15 +736,16 @@ def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100,
         
         print(f"Episode {ep+1}, Target return: {target_return}")
         
-        while not (done or truncated) and t < 10000:  # Max episode length
-            # Stack and flatten current frames - EXACTLY as in your training code
+        while not (done or truncated) and t < 10000:  # Max episode length cap
+            # Render based on frequency setting
+            if render and t % render_freq == 0:
+                frame = env.render()
+                if save_video and frame is not None:
+                    video_frames.append(frame)
+            
+            # Stack and flatten current frames
             stacked_frames = np.stack(list(frame_buffer), axis=0).flatten()
             state_tensor = torch.tensor(stacked_frames, dtype=torch.float).unsqueeze(0).to(device)
-            
-            # Debug dimensions on first step
-            if t == 0:
-                print(f"State tensor shape: {state_tensor.shape}")
-                print(f"Model state dim: {model.state_dim}")
             
             # Update history
             if t < model.max_length:
@@ -732,7 +763,7 @@ def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100,
                 timesteps[0, -1] = min(t, model.max_ep_len-1)
                 returns_to_go[0, -1] = target_return_tensor - episode_return
             
-# Get action from model
+            # Get action from model
             with torch.no_grad():
                 action = model.get_action(
                     states,
@@ -746,10 +777,6 @@ def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100,
             if not isinstance(action, torch.Tensor):
                 action = torch.tensor(action, device=device)
 
-            # Debug action
-            if t % 50 == 0 or t < 5:
-                print(f"Step {t}, Action: {action.item()}, RTG: {(target_return_tensor - episode_return).item()}")
-            
             # Update action history
             if t < model.max_length:
                 actions[0, t] = action
@@ -760,6 +787,18 @@ def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100,
             action_int = action.item() if isinstance(action, torch.Tensor) else int(action)
             next_state, reward, done, truncated, info = env.step(action_int)
             episode_return += reward
+            
+            # Check if we lost a life - important for games like Breakout
+            if initial_lives is not None and 'lives' in info:
+                if info['lives'] < current_lives:
+                    current_lives = info['lives']
+                    print(f"Lost a life! Remaining lives: {current_lives}")
+                    
+                    # If we've lost all lives or hit the configured limit,
+                    # we should end the episode
+                    if current_lives == 0 or (initial_lives - current_lives >= 5):
+                        print(f"Lost 5 lives or all lives, ending episode")
+                        break  # This will end the episode after losing 5 lives
             
             # Update frame buffer with new processed frame
             processed_frame = preprocess_frame(next_state)
@@ -774,12 +813,30 @@ def evaluate_dt_atari(model, game_name, num_eval_episodes=10, target_return=100,
         
         returns.append(episode_return)
         print(f"Episode {ep+1}/{num_eval_episodes}: Return = {episode_return}")
+        
+        # Save video if requested
+        if save_video and video_frames:
+            try:
+                height, width, layers = video_frames[0].shape
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                video = cv2.VideoWriter(video_path, fourcc, 30.0, (width, height))
+                
+                for frame in video_frames:
+                    video.write(frame)
+                video.release()
+                print(f"Video saved to {video_path}")
+            except Exception as e:
+                print(f"Failed to save video: {e}")
     
     env.close()
-    avg_return = sum(returns) / len(returns)
-    print(f"Average return over {num_eval_episodes} episodes: {avg_return:.2f}")
-    return avg_return
-
+    
+    if returns:
+        avg_return = sum(returns) / len(returns)
+        print(f"Average return over {num_eval_episodes} episodes: {avg_return:.2f}")
+        return avg_return
+    else:
+        print("No complete returns recorded.")
+        return 0
 def preprocess_frame(frame):
     """
     Preprocess frame using same method as in training dataset.
