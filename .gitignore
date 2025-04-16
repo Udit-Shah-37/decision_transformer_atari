@@ -1,7 +1,7 @@
-/dt_models
-Minari
-project_data
-check_atari_env.py
-debug_atari.py
-check_ale_config.py
-/decision_transformer_atari/
+/dt_models/
+/Minari/
+/project_data/
+/check_atari_env.py
+/debug_atari.py
+/check_ale_config.py
+
