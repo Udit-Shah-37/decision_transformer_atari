@@ -1,1 +1,1 @@
-# decision_Ttansformer_atari
+# decision_tansformer_atari
