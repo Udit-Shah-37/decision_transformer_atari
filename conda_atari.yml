@@ -1,0 +1,32 @@
+name: decision_transformer_atari
+channels:
+  - conda-forge
+  - pytorch
+  - nvidia
+  - defaults
+dependencies:
+  - python=3.8
+  - pip
+  - numpy
+  - opencv
+  - psutil
+  - tqdm
+  - pytorch=2.0.1
+  - torchvision
+  - cudatoolkit=11.8
+  - h5py
+  - swig  # Added SWIG as a conda dependency
+  - pip:
+      - gymnasium[atari]>=0.28.1  # Removed box2d dependency
+      - shimmy
+      - ale-py>=0.8.1
+      - autorom
+      - huggingface_hub
+      - pyprind
+      - absl-py
+      - gin-config
+      - imageio
+      - imageio-ffmpeg
+      - tensorboard
+      - scikit-learn
+      - matplotlib
