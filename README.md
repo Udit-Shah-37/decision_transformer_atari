@@ -1,7 +1,10 @@
-# decision_tansformer_atari
+# Decision_Transformer_Atari
 
-This repo contains my implmentations of the Decision Transformer Architecture on Beakout-game in Minari Datasets
+This repo contains my implmentations of the Decision Transformer Architecture on Beakout-game in Minari-Atari Datasets
 
-To build the environment, run the following command: 
+## Environment Setup
 
-'''conda env create -f conda_atari.yml'''
+To build the environment, run the following command:
+
+```bash
+conda env create -f conda_atari.yml
